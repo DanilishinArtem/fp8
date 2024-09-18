@@ -1,4 +1,6 @@
 import torch
+# https://github.com/NVIDIA/TransformerEngine/issues/965
+# https://github.com/NVIDIA/TransformerEngine/blob/744624d004f4514ffbaa90ac83e214311c86c607/transformer_engine/pytorch/float8_tensor.py#L12
 
 # Constants for FP8 format
 SIGN_BIT = 0x80

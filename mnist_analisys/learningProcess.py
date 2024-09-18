@@ -12,12 +12,14 @@ from fp8.FP8Tensor import to_fp8
 def convert_gradients_to_fp8(model):
     for param in model.parameters():
         if param.grad is not None:
-            param.grad.data = to_fp8(param.grad.data).to('cuda')
+            # param.grad.data = to_fp8(param.grad.data).to('cuda')
+            param.grad.data = param.grad.data.to(torch.torch.float8_e4m3fn).to(torch.bfloat16).to('cuda')
 
 def convert_weights_to_fp8(model):
     for param in model.parameters():
         if param is not None:
-            param.data = to_fp8(param.data).to('cuda')
+            # param.data = to_fp8(param.data).to('cuda')
+            param.data = param.data.to(torch.torch.float8_e4m3fn).to(torch.bfloat16).to('cuda')
 
 
 class LearningProcess:
@@ -59,6 +61,7 @@ class LearningProcess:
                 labels = labels.to('cuda')
                 self.optimizer.zero_grad()
                 with autocast(dtype=torch.bfloat16):
+                    convert_weights_to_fp8(model)
                     output = model(images)
                     loss = self.criterion(output, labels)
                 pred = output.argmax(dim=1, keepdim=True)
@@ -66,8 +69,8 @@ class LearningProcess:
                 numPic += len(images)
                 loss.backward()
                 # convert gradients to fp8
-                convert_gradients_to_fp8(model)
-                convert_weights_to_fp8(model)
+                # convert_gradients_to_fp8(model)
+                # convert_weights_to_fp8(model)
                 # collector.collectGradients(model, self.writer, total_counter)
                 self.optimizer.step()
                 total_loss += loss.item()
