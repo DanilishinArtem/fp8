@@ -1,0 +1,1 @@
+export PYTHONPATH=/home/adanilishin/fp8:$PYTHONPATH
