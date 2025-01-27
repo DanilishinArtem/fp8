@@ -7,22 +7,16 @@ class Config:
         self.split = 0.8
         self.pathToData = "/home/adanilishin/fp8/mnist_analisys/mnist_dataset"
         self.pathToLogs = "/home/adanilishin/fp8/mnist_analisys/Logs/test"
-        
-        self.fault_time = []
-        self.rate = 0
-        # position = 7 (first bit flip), position = 6 (second bit flip)
-        self.position = 6
-        # self.target = "lin2"
-        self.target = "6"
 
-# 8, 6, 4, 2
-# registered hook for layer relu1
-# registered hook for layer conv2
-# registered hook for layer relu2
-# registered hook for layer pool
-# registered hook for layer flatten
-# registered hook for layer lin1
-# registered hook for layer relu3
-# registered hook for layer lin2
-# registered hook for layer log_softmax
-        
+
+
+# pip install -v --disable-pip-version-check --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" .
+
+
+
+# conda create -n apex_env python=3.11
+# conda activate apex_env
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+# pip install torch==2.2.0 torchvision==0.17.0 torchaudio==2.2.0 --index-url https://download.pytorch.org/whl/cu121
+# export CUDA_HOME=/usr/local/cuda-12.3
+# pip install -v --no-build-isolation --disable-pip-version-check --no-cache-dir --config-settings="--build-option=--cpp_ext" --config-settings="--build-option=--cuda_ext" .

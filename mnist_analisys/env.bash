@@ -1,1 +1,1 @@
-export PYTHONPATH=/home/adanilishin/fp8:$PYTHONPATH
+export PYTHONPATH=/home/adanilishin/fp8:/home/adanilishin/fp8/mnist_analisys/apex:$PYTHONPATH

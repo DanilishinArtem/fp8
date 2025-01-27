@@ -2,28 +2,13 @@ from torch.utils.data import DataLoader, random_split
 from dataLoader import load_mnist_dataset
 from config import Config
 import torch.nn as nn
-import torch.optim as optim
 import torch
 from torch.utils.tensorboard import SummaryWriter
-from mnist_analisys.gradientCollector import GradientCollector
-from torch.cuda.amp import autocast, GradScaler
-from fp8.FP8Tensor import to_fp8
 
-def convert_gradients_to_fp8(model):
-    for param in model.parameters():
-        if param.grad is not None:
-            # param.grad.data = to_fp8(param.grad.data).to('cuda')
-            param.grad.data = param.grad.data.to(torch.torch.float8_e4m3fn).to(torch.bfloat16).to('cuda')
-
-def convert_weights_to_fp8(model):
-    for param in model.parameters():
-        if param is not None:
-            # param.data = to_fp8(param.data).to('cuda')
-            param.data = param.data.to(torch.torch.float8_e4m3fn).to(torch.bfloat16).to('cuda')
 
 
 class LearningProcess:
-    def __init__(self, optimizer: optim, criterion: nn.Module, writer: SummaryWriter = None):
+    def __init__(self, optimizer, criterion: nn.Module, writer: SummaryWriter = None):
         self.config = Config()
         self.writer = writer
         self.train_loader, self.val_loader, self.test_loader = self.createDataset()
@@ -43,7 +28,6 @@ class LearningProcess:
         return train_loader, val_loader, test_loader
     
     def train(self, model: nn.Module):
-        collector = GradientCollector()
         print("start training\n\n")
         total_counter = 0
         total_loss = 0
@@ -60,26 +44,17 @@ class LearningProcess:
                 images = images.to('cuda')
                 labels = labels.to('cuda')
                 self.optimizer.zero_grad()
-                with autocast(dtype=torch.bfloat16):
-                    convert_weights_to_fp8(model)
-                    output = model(images)
-                    loss = self.criterion(output, labels)
+                output = model(images)
+                loss = self.criterion(output, labels)
                 pred = output.argmax(dim=1, keepdim=True)
                 correct += pred.eq(labels.view_as(pred)).sum().item()
                 numPic += len(images)
                 loss.backward()
-                # convert gradients to fp8
-                # convert_gradients_to_fp8(model)
-                # convert_weights_to_fp8(model)
-                # collector.collectGradients(model, self.writer, total_counter)
                 self.optimizer.step()
                 total_loss += loss.item()
                 self.writer.add_scalar("Loss/train", loss.item(), total_counter)
                 self.writer.add_scalar("Accuracy/train", correct / numPic, total_counter)
                 print("For step " + str(total_counter) + " training loss = " + str(round(total_loss / total_counter,2)) + " training accuracy = " + str(round(correct / numPic,2)))
-
-# for param in model.parameters():
-#     print(param._backward_hooks)
 
     def validate(self, model: nn.Module):
         total_counter = 0
