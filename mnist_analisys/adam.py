@@ -49,9 +49,23 @@ class ScaledAdam(Optimizer):
                     state['step'] = 0
                     state['exp_avg'] = torch.zeros_like(p.data)
                     state['exp_avg_sq'] = torch.zeros_like(p.data)
+                    state['p_prev'] = p.data.clone().detach()
+                    state['g_prev'] = grad.clone().detach()
+                    state['hessian'] = torch.zeros_like(p.data)
 
                     state['sigma_g_sq'] = group['eps']
                     state['gamma'] = 0.999
+                else:
+                    hessian_beta=0.99
+                    s = p.data - state['p_prev']
+                    y = grad - state['g_prev']
+                    # Оценка диагонали гессиана
+                    h_estimate = y / (s + group['eps'])
+                    # Обновление гессиана через EMA
+                    state['hessian'] = hessian_beta * state['hessian'] + (1 - hessian_beta) * h_estimate
+                    # Сохранение текущих значений для следующего шага
+                    state['p_prev'].copy_(p.data)
+                    state['g_prev'].copy_(grad)
                 
                 # Part of gradient correction ..................................................................................................
                 state['sigma_g_sq'] = state['gamma'] * state['sigma_g_sq'] + (1 - state['gamma']) * p.grad.data.var().item()
@@ -62,17 +76,18 @@ class ScaledAdam(Optimizer):
                 km_numerator = pow(1 - beta1, 2) * sigma_g_sq
                 km_denominator = 1 - beta1**2
                 km = km_numerator / (km_denominator + 1e-16)
-                state['exp_avg'] = beta1 * state['exp_avg'] + (1 - beta1) * p.grad.data * pow(1 / km, 1 / 2)
                 
                 # Масштабирование второго момента (предполагаем нормальность градиентов)
                 kv_numerator = pow(1 - beta2, 2) * sigma_g_sq * sigma_g_sq * 2
                 kv_denominator = 1 - beta2**2
                 kv = kv_numerator / (kv_denominator + 1e-16)
-                state['exp_avg_sq'] = beta2 * state['exp_avg_sq'] + (1 - beta2) * p.grad.data * p.grad.data * pow(1 / kv, 1 / 2)
                 # Part of gradient correction ..................................................................................................
 
                 self.writer.add_scalar("exp_avg.std", state['exp_avg'].std().item(), self.coutner)
                 self.writer.add_scalar("exp_avg_sq.std", state['exp_avg_sq'].std().item(), self.coutner)
+                self.writer.add_scalar("hess.min", state['hessian'].min().item(), self.coutner)
+                self.writer.add_scalar("hess.max", state['hessian'].max().item(), self.coutner)
+                self.writer.add_scalar("hess.mean", state['hessian'].mean().item(), self.coutner)
 
                 exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
                 state['step'] += 1
@@ -86,8 +101,10 @@ class ScaledAdam(Optimizer):
                         grad.add_(p.data, alpha=group['weight_decay'])
 
                 # Обновляем моменты
-                exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
-                exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+                exp_avg.mul_(beta1).add_(grad * pow(1 / km, 1 / 2), alpha=1 - beta1)
+                exp_avg_sq.mul_(beta2).addcmul_(grad * pow(1 / kv, 1 / 2), grad, value=1 - beta2)
+                # exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
+                # exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
 
                 # Коррекция смещения
                 if group['bias_correction']:
@@ -103,3 +120,7 @@ class ScaledAdam(Optimizer):
                 p.data.addcdiv_(exp_avg, denom, value=-step_size)
 
         return loss
+    
+
+    # https://www.math.uwaterloo.ca/~hwolkowi/henry/reports/cauchy.pdf
+    # https://arxiv.org/pdf/2009.13586

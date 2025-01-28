@@ -49,9 +49,23 @@ class ScaledAdam(Optimizer):
                     state['step'] = 0
                     state['exp_avg'] = torch.zeros_like(p.data)
                     state['exp_avg_sq'] = torch.zeros_like(p.data)
+                    state['p_prev'] = p.data.clone().detach()
+                    state['g_prev'] = grad.clone().detach()
+                    state['hessian'] = torch.zeros_like(p.data)
 
                     state['sigma_g_sq'] = group['eps']
                     state['gamma'] = 0.999
+                else:
+                    hessian_beta=0.99
+                    s = p.data - state['p_prev']
+                    y = grad - state['g_prev']
+                    # Оценка диагонали гессиана
+                    h_estimate = y / (s + group['eps'])
+                    # Обновление гессиана через EMA
+                    state['hessian'] = hessian_beta * state['hessian'] + (1 - hessian_beta) * h_estimate
+                    # Сохранение текущих значений для следующего шага
+                    state['p_prev'].copy_(p.data)
+                    state['g_prev'].copy_(grad)
                 
                 # Part of gradient correction ..................................................................................................
                 state['sigma_g_sq'] = state['gamma'] * state['sigma_g_sq'] + (1 - state['gamma']) * p.grad.data.var().item()
@@ -73,6 +87,9 @@ class ScaledAdam(Optimizer):
 
                 self.writer.add_scalar("exp_avg.std", state['exp_avg'].std().item(), self.coutner)
                 self.writer.add_scalar("exp_avg_sq.std", state['exp_avg_sq'].std().item(), self.coutner)
+                self.writer.add_scalar("hess.min", state['hessian'].min().item(), self.coutner)
+                self.writer.add_scalar("hess.max", state['hessian'].max().item(), self.coutner)
+                self.writer.add_scalar("hess.mean", state['hessian'].mean().item(), self.coutner)
 
                 exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
                 state['step'] += 1
