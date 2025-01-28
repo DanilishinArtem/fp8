@@ -20,7 +20,7 @@ if __name__ == "__main__":
     config = Config()
     # optimizer = optim.Adam(model.parameters(), lr=config.learning_rate)
     # optimizer = optim.SGD(model.parameters(), lr=config.learning_rate)
-    optimizer = ScaledAdam(model.parameters(), lr=config.learning_rate)
+    optimizer = ScaledAdam(model.parameters(), lr=config.learning_rate, writer=writer)
     criterion = nn.CrossEntropyLoss()
     learner = LearningProcess(optimizer, criterion, writer)
     learner.train(model)

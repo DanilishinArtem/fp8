@@ -2,9 +2,11 @@ import torch
 from torch.optim import Optimizer
 
 class ScaledAdam(Optimizer):
-    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8,
+    def __init__(self, params, writer, lr=1e-3, betas=(0.9, 0.999), eps=1e-8,
                  weight_decay=0, bias_correction=True, adam_w_mode=True,
                  amsgrad=False, set_grad_none=True):
+        self.writer = writer
+        self.coutner = 0
         if amsgrad:
             raise RuntimeError('AdamNoApex does not support the AMSGrad variant.')
         
@@ -24,6 +26,7 @@ class ScaledAdam(Optimizer):
             super().zero_grad()
 
     def step(self, closure=None):
+        self.coutner += 1
         loss = None
         if closure is not None:
             loss = closure()
@@ -47,7 +50,7 @@ class ScaledAdam(Optimizer):
                     state['exp_avg'] = torch.zeros_like(p.data)
                     state['exp_avg_sq'] = torch.zeros_like(p.data)
 
-                    state['sigma_g_sq'] = 0
+                    state['sigma_g_sq'] = group['eps']
                     state['gamma'] = 0.999
                 
                 # Part of gradient correction ..................................................................................................
@@ -67,8 +70,9 @@ class ScaledAdam(Optimizer):
                 kv = kv_numerator / (kv_denominator + 1e-16)
                 state['exp_avg_sq'] = beta2 * state['exp_avg_sq'] + (1 - beta2) * p.grad.data * p.grad.data * pow(1 / kv, 1 / 2)
                 # Part of gradient correction ..................................................................................................
-                # print("[DEBUG] exp_avg.std: {}, exp_avg_sq.std: {}".format(state['exp_avg'].std().item(), state['exp_avg_sq'].std().item()))
-                # print("[DEBUG] km: {}, kv: {}".format(km, pow(kv, 1 / 2)))
+
+                self.writer.add_scalar("exp_avg.std", state['exp_avg'].std().item(), self.coutner)
+                self.writer.add_scalar("exp_avg_sq.std", state['exp_avg_sq'].std().item(), self.coutner)
 
                 exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
                 state['step'] += 1
