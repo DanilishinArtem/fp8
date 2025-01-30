@@ -65,24 +65,21 @@ class ScaledAdam(Optimizer):
                     state['hessian'] = torch.zeros_like(p.data)
                     state['cummulative'] = 0
                 else:
-                    beta = 0.9
-                    bias_correction = 1 - beta ** state['step']
-                    alpha = (1 - beta) / bias_correction
-                    delta_grad = grad - state['exp_avg']
-                    d_p = p.data - state['p_prev']
-                    denom = d_p.norm(p=4).add(group['eps'])
-                    d_p.div_(denom)
-                    v_sq = d_p.mul(d_p)
-                    delta = delta_grad.div_(denom).mul_(d_p).sum().mul(-alpha) - state['hessian'].mul(v_sq).sum()
-                    state['hessian'].addcmul_(v_sq, delta)
-                    state['p_prev'].copy_(p.data)
-                    state['g_prev'].copy_(grad)
-                
+                    delta_p = p.data - state['p_prev']
+                    delta_g = grad - state['g_prev']
+                    # d = -delta_p / group['lr']
+                    state['hessian'] = state['hessian'] + (((delta_p * delta_g).sum() - (delta_p * state['hessian'] * delta_p).sum()) / delta_p.norm(p=4)) * delta_p.pow(2)
+                    state['p_prev'] = p.data.clone().detach()
+                    state['g_prev'] = grad.clone().detach()
+                    print("Number of elements in hessian: {}".format(state['hessian'].numel()))
 
-                current_hess = state['hessian'].max().item()
-                state['cummulative'] += current_hess
-                self.writer.add_scalar("hess.mean_{}".format(self.layer), current_hess, self.coutner)
-                self.writer.add_scalar("cummulative_hess_{}".format(self.layer), state['cummulative'], self.coutner)
+                    ind = (state['hessian'] * delta_p.pow(2)).mean() * group['lr'] * pow(beta2, 1/2) / beta1 / grad.norm(p=1) / 2
+                    current_hess = state['hessian'].max().item()
+                    state['cummulative'] += current_hess
+
+                    self.writer.add_scalar("hessianMax_{}".format(self.layer), current_hess, self.coutner)
+                    self.writer.add_scalar("cummulative_hess_{}".format(self.layer), state['cummulative'], self.coutner)
+                    self.writer.add_scalar("ind_{}".format(self.layer), ind, self.coutner)
 
                 exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
                 state['step'] += 1
