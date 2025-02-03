@@ -94,14 +94,14 @@ class ScaledAdam(Optimizer):
                 # Обновление параметров
                 p.data.addcdiv_(state['exp_avg'], denom, value=-step_size)
 
-                # Part of casting to FP8
-                e, m = 5, 2
-                state['exp_avg'] = self.tensor_to_fp8(state['exp_avg'], exponent_bits=e, mantissa_bits=m)
-                state['exp_avg_sq'] = self.tensor_to_fp8(state['exp_avg_sq'], exponent_bits=e, mantissa_bits=m)
+                # # Part of casting to FP8
+                # e, m = 5, 2
+                # state['exp_avg'] = self.tensor_to_fp8(state['exp_avg'], exponent_bits=e, mantissa_bits=m)
+                # state['exp_avg_sq'] = self.tensor_to_fp8(state['exp_avg_sq'], exponent_bits=e, mantissa_bits=m)
 
-                # # Part of castirng to FP4
-                # state['exp_avg'] = self.tensor_to_fp8(state['exp_avg'], exponent_bits=2, mantissa_bits=1)
-                # state['exp_avg_sq'] = self.tensor_to_fp8(state['exp_avg_sq'], exponent_bits=2, mantissa_bits=1)
+                # Part of castirng to FP4
+                state['exp_avg'] = self.tensor_to_fp8(state['exp_avg'], exponent_bits=2, mantissa_bits=1)
+                state['exp_avg_sq'] = self.tensor_to_fp8(state['exp_avg_sq'], exponent_bits=2, mantissa_bits=1)
 
                 # self.writer.add_histogram("exp_avg_layer_{}".format(self.layer), state['exp_avg'], self.counter)
                 # self.writer.add_histogram("exp_avg_sq_layer_{}".format(self.layer), state['exp_avg_sq'], self.counter)
