@@ -3,7 +3,7 @@ class Config:
     def __init__(self):
         self.device = 'cuda'
         self.batch_size = 64
-        self.learning_rate = 0.01 * 100
+        self.learning_rate = 0.001
         self.num_epochs = 3
         self.split = 0.8
         self.pathToData = "/home/adanilishin/fp8/mnist_analisys/mnist_dataset"

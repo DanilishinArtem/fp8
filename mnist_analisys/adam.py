@@ -54,32 +54,12 @@ class ScaledAdam(Optimizer):
 
                 state = self.state[p]
                 beta1, beta2 = group['betas']
-                beta1, beta2 = 0.9, 0.9972337482710926
                 self.layer += 1
                 # Инициализация состояния
                 if len(state) == 0:
                     state['step'] = 0
                     state['exp_avg'] = torch.zeros_like(p.data)
                     state['exp_avg_sq'] = torch.zeros_like(p.data)
-                    state['sigma_g_sq'] = group['eps']
-                    state['gamma'] = 0.999
-
-                
-                # Part of gradient correction ..................................................................................................
-                # state['sigma_g_sq'] = state['gamma'] * state['sigma_g_sq'] + (1 - state['gamma']) * p.grad.data.var().item()
-                state['sigma_g_sq'] = state['gamma'] * state['sigma_g_sq'] + (1 - state['gamma']) * (p.grad.data * p.grad.data).mean().item()
-                
-                # Масштабирование первого момента
-                km_numerator = pow(1 - beta1, 2) * state['sigma_g_sq']
-                km_denominator = 1 - beta1**2
-                # km = km_numerator / (km_denominator + 1e-16)
-                km = km_numerator / (km_denominator)
-                # Масштабирование второго момента (предполагаем нормальность градиентов)
-                kv_numerator = pow(1 - beta2, 2) * state['sigma_g_sq'] * state['sigma_g_sq'] * 2
-                kv_denominator = 1 - beta2**2
-                # kv = kv_numerator / (kv_denominator + 1e-16)
-                kv = kv_numerator / (kv_denominator)
-                # Part of gradient correction ..................................................................................................
 
                 state['step'] += 1
                 t = state['step']
@@ -92,12 +72,15 @@ class ScaledAdam(Optimizer):
                         grad.add_(p.data, alpha=group['weight_decay'])
 
                 
-                # # Обновляем моменты
-                # exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
-                # exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+                # Обновляем моменты
+                grad /= grad.std()
+                state['exp_avg_sq'] = -(2 * beta1 * (1 - beta1) / (pow(beta1, 2) + pow(1 - beta1, 2))) * state['exp_avg'] * grad
+                state['exp_avg'].mul_(beta1).add_(grad, alpha=1 - beta1)
+                state['exp_avg_sq'] = state['exp_avg_sq'] + state['exp_avg'].pow(2) / (pow(beta1, 2) + pow(1 - beta1, 2))
 
-                state['exp_avg'].mul_(beta1).add_(grad * pow(1 / km, 1 / 2), alpha=1 - beta1)
-                state['exp_avg_sq'].mul_(beta2).addcmul_(grad * pow(1 / kv, 1 / 2), grad, value=1 - beta2)
+                # state['exp_avg'].mul_(beta1).add_(grad, alpha=1 - beta1)
+                # state['exp_avg_sq'].mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+
                 # Коррекция смещения
                 if group['bias_correction']:
                     bias_correction1 = 1 - beta1 ** t
@@ -109,18 +92,16 @@ class ScaledAdam(Optimizer):
                     denom = state['exp_avg_sq'].sqrt().add_(group['eps'])
 
                 # Обновление параметров
-                # N = 1e6
-                N = 1e20
-                p.data.addcdiv_(state['exp_avg'] / pow(N, 1/2), denom, value=-step_size)
+                p.data.addcdiv_(state['exp_avg'], denom, value=-step_size)
 
-                # # Part of casting to FP8
-                # e, m = 5, 2
-                # state['exp_avg'] = self.tensor_to_fp8(state['exp_avg'], exponent_bits=e, mantissa_bits=m)
-                # state['exp_avg_sq'] = self.tensor_to_fp8(state['exp_avg_sq'], exponent_bits=e, mantissa_bits=m)
+                # Part of casting to FP8
+                e, m = 5, 2
+                state['exp_avg'] = self.tensor_to_fp8(state['exp_avg'], exponent_bits=e, mantissa_bits=m)
+                state['exp_avg_sq'] = self.tensor_to_fp8(state['exp_avg_sq'], exponent_bits=e, mantissa_bits=m)
 
-                # Part of castirng to FP4
-                state['exp_avg'] = self.tensor_to_fp8(state['exp_avg'], exponent_bits=2, mantissa_bits=1)
-                state['exp_avg_sq'] = self.tensor_to_fp8(state['exp_avg_sq'], exponent_bits=2, mantissa_bits=1)
+                # # Part of castirng to FP4
+                # state['exp_avg'] = self.tensor_to_fp8(state['exp_avg'], exponent_bits=2, mantissa_bits=1)
+                # state['exp_avg_sq'] = self.tensor_to_fp8(state['exp_avg_sq'], exponent_bits=2, mantissa_bits=1)
 
                 # self.writer.add_histogram("exp_avg_layer_{}".format(self.layer), state['exp_avg'], self.counter)
                 # self.writer.add_histogram("exp_avg_sq_layer_{}".format(self.layer), state['exp_avg_sq'], self.counter)
@@ -130,9 +111,8 @@ class ScaledAdam(Optimizer):
                 # ind = state['exp_avg_sq']
                 # ind = state['exp_avg'] * denom / step_size
                 
-                self.writer.add_scalar("ind_min[{}]".format(self.layer), ind.min().item(), self.counter)
-                self.writer.add_scalar("ind_max[{}]".format(self.layer), ind.max().item(), self.counter)
-                self.writer.add_scalar("ind_mean[{}]".format(self.layer), ind.mean().item(), self.counter)
+                self.writer.add_scalar("abs_min[{}]".format(self.layer), ind.abs().min().item(), self.counter)
+                self.writer.add_scalar("abs_max[{}]".format(self.layer), ind.abs().max().item(), self.counter)
         return loss
     
 
