@@ -5,6 +5,7 @@ class ScaledAdam(Optimizer):
     def __init__(self, params, writer, lr=1e-3, betas=(0.9, 0.999), eps=1e-8,
                  weight_decay=0, bias_correction=True, adam_w_mode=True,
                  amsgrad=False, set_grad_none=True):
+        self.layer = None
         self.writer = writer
         self.coutner = 0
         if amsgrad:
@@ -13,7 +14,7 @@ class ScaledAdam(Optimizer):
         defaults = dict(lr=lr, betas=betas, eps=eps,
                         weight_decay=weight_decay,
                         bias_correction=bias_correction,
-                        adam_w_mode=adam_w_mode)
+                        adam_w_mode=adam_w_mode) 
         super().__init__(params, defaults)
         self.set_grad_none = set_grad_none
 
@@ -25,7 +26,18 @@ class ScaledAdam(Optimizer):
         else:
             super().zero_grad()
 
+    def tensor_to_fp8(self, tensor, exponent_bits=4, mantissa_bits=3):
+        max_exponent = 2 ** (exponent_bits - 1) - 1
+        min_exponent = -max_exponent + 1
+        max_mantissa = 2 ** mantissa_bits - 1
+        scale = 2.0 ** min_exponent
+        tensor_scaled = tensor / scale
+        tensor_quantized = torch.round(tensor_scaled * max_mantissa) / max_mantissa
+        tensor_fp8 = tensor_quantized * scale
+        return tensor_fp8
+
     def step(self, closure=None):
+        self.layer = 0
         self.coutner += 1
         loss = None
         if closure is not None:
@@ -42,8 +54,7 @@ class ScaledAdam(Optimizer):
 
                 state = self.state[p]
                 beta1, beta2 = group['betas']
-                beta1, beta2 = 0.9, 0.9972337482710926
-
+                self.layer += 1
                 # Инициализация состояния
                 if len(state) == 0:
                     state['step'] = 0
@@ -52,44 +63,23 @@ class ScaledAdam(Optimizer):
                     state['p_prev'] = p.data.clone().detach()
                     state['g_prev'] = grad.clone().detach()
                     state['hessian'] = torch.zeros_like(p.data)
-
-                    state['sigma_g_sq'] = group['eps']
-                    state['gamma'] = 0.999
+                    state['cummulative'] = 0
                 else:
-                    hessian_beta=0.99
-                    s = p.data - state['p_prev']
-                    y = grad - state['g_prev']
-                    # Оценка диагонали гессиана
-                    h_estimate = y / (s + group['eps'])
-                    # Обновление гессиана через EMA
-                    state['hessian'] = hessian_beta * state['hessian'] + (1 - hessian_beta) * h_estimate
-                    # Сохранение текущих значений для следующего шага
-                    state['p_prev'].copy_(p.data)
-                    state['g_prev'].copy_(grad)
-                
-                # Part of gradient correction ..................................................................................................
-                state['sigma_g_sq'] = state['gamma'] * state['sigma_g_sq'] + (1 - state['gamma']) * p.grad.data.var().item()
-                sigma_g_sq = state['sigma_g_sq']
-                sigma_g = pow(sigma_g_sq + 1e-16, 1 / 2)  # Добавляем для стабильности
-                
-                # Масштабирование первого момента
-                km_numerator = pow(1 - beta1, 2) * sigma_g_sq
-                km_denominator = 1 - beta1**2
-                km = km_numerator / (km_denominator + 1e-16)
-                # state['exp_avg'] = beta1 * state['exp_avg'] + (1 - beta1) * p.grad.data * pow(1 / km, 1 / 2)
-                
-                # Масштабирование второго момента (предполагаем нормальность градиентов)
-                kv_numerator = pow(1 - beta2, 2) * sigma_g_sq * sigma_g_sq * 2
-                kv_denominator = 1 - beta2**2
-                kv = kv_numerator / (kv_denominator + 1e-16)
-                # state['exp_avg_sq'] = beta2 * state['exp_avg_sq'] + (1 - beta2) * p.grad.data * p.grad.data * pow(1 / kv, 1 / 2)
-                # Part of gradient correction ..................................................................................................
+                    delta_p = p.data - state['p_prev']
+                    delta_g = grad - state['g_prev']
+                    # d = -delta_p / group['lr']
+                    state['hessian'] = state['hessian'] + (((delta_p * delta_g).sum() - (delta_p * state['hessian'] * delta_p).sum()) / delta_p.norm(p=4)) * delta_p.pow(2)
+                    state['p_prev'] = p.data.clone().detach()
+                    state['g_prev'] = grad.clone().detach()
+                    # print("Number of elements in hessian: {}".format(state['hessian'].numel()))
 
-                self.writer.add_scalar("exp_avg.std", state['exp_avg'].std().item(), self.coutner)
-                self.writer.add_scalar("exp_avg_sq.std", state['exp_avg_sq'].std().item(), self.coutner)
-                self.writer.add_scalar("hess.min", state['hessian'].min().item(), self.coutner)
-                self.writer.add_scalar("hess.max", state['hessian'].max().item(), self.coutner)
-                self.writer.add_scalar("hess.mean", state['hessian'].mean().item(), self.coutner)
+                    ind = (state['hessian'] * delta_p.pow(2)).mean() * group['lr'] * pow(beta2, 1/2) / beta1 / grad.norm(p=1) / 2
+                    current_hess = state['hessian'].max().item()
+                    state['cummulative'] += current_hess
+
+                    self.writer.add_scalar("hessianMax_{}".format(self.layer), current_hess, self.coutner)
+                    self.writer.add_scalar("cummulative_hess_{}".format(self.layer), state['cummulative'], self.coutner)
+                    self.writer.add_scalar("ind_{}".format(self.layer), ind, self.coutner)
 
                 exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
                 state['step'] += 1
@@ -103,8 +93,8 @@ class ScaledAdam(Optimizer):
                         grad.add_(p.data, alpha=group['weight_decay'])
 
                 # Обновляем моменты
-                exp_avg.mul_(beta1).add_(grad * pow(1 / km, 1 / 2), alpha=1 - beta1)
-                exp_avg_sq.mul_(beta2).addcmul_(grad * pow(1 / kv, 1 / 2), grad, value=1 - beta2)
+                exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
+                exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
 
                 # Коррекция смещения
                 if group['bias_correction']:
@@ -120,3 +110,7 @@ class ScaledAdam(Optimizer):
                 p.data.addcdiv_(exp_avg, denom, value=-step_size)
 
         return loss
+    
+
+    # https://www.math.uwaterloo.ca/~hwolkowi/henry/reports/cauchy.pdf
+    # https://arxiv.org/pdf/2009.13586

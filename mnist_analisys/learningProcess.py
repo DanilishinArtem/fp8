@@ -37,12 +37,14 @@ class LearningProcess:
         # hookManager.remove_hooks()
         for epoch in range(self.config.num_epochs):
             model.train()
-            model = model.to('cuda')
+            if self.config.device == 'cuda':
+                model = model.to('cuda')
             for batch in self.train_loader:
                 total_counter += 1
                 images, labels = batch["image"], batch["label"]
-                images = images.to('cuda')
-                labels = labels.to('cuda')
+                if self.config.device == 'cuda':
+                    images = images.to('cuda')
+                    labels = labels.to('cuda')
                 self.optimizer.zero_grad()
                 output = model(images)
                 loss = self.criterion(output, labels)
