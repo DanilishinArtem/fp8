@@ -74,12 +74,11 @@ class ScaledAdam(Optimizer):
                     # Previous update direction
                     state['update'] = torch.zeros_like(p, memory_format=torch.preserve_format)
 
-                # # Calculate current lr
-                # if state['step'] < group['warmup']:
-                #     curr_lr = (group['base_lr'] - group['init_lr']) * state['step'] / group['warmup'] + group['init_lr']
-                # else:
-                #     curr_lr = group['lr']
-                curr_lr = group['lr']
+                # Calculate current lr
+                if state['step'] < group['warmup']:
+                    curr_lr = (group['base_lr'] - group['init_lr']) * state['step'] / group['warmup'] + group['init_lr']
+                else:
+                    curr_lr = group['lr']
 
                 # Perform optimization step
                 grad = p.grad
@@ -144,8 +143,6 @@ class ScaledAdam(Optimizer):
                 p.add_(d_p, alpha=-curr_lr)
 
                 self.layer += 1
-                self.writer.add_scalar("hessMean_{}".format(self.layer), state['approx_hessian'].abs().mean().item(), self.counter)
-                self.writer.add_scalar("hessVar_{}".format(self.layer), state['approx_hessian'].abs().var().item(), self.counter)
-                self.writer.add_scalar("CurvatureRatio_{}".format(self.layer), (state['approx_hessian'].abs().max()/(state['approx_hessian'].abs().min()+group['eps'])).item(), self.counter)
+                self.writer.add_scalar("hess_{}".format(self.layer), state['approx_hessian'].max().item(), self.counter)
 
         return loss

@@ -60,26 +60,44 @@ class ScaledAdam(Optimizer):
                     state['step'] = 0
                     state['exp_avg'] = torch.zeros_like(p.data)
                     state['exp_avg_sq'] = torch.zeros_like(p.data)
+                    state['scale'] = None
 
                 state['step'] += 1
                 t = state['step']
 
-                # Применяем weight decay (AdamW vs Adam)
-                if group['weight_decay'] != 0:
-                    if group['adam_w_mode']:
-                        p.data.mul_(1 - group['lr'] * group['weight_decay'])
-                    else:
-                        grad.add_(p.data, alpha=group['weight_decay'])
+                # # Применяем weight decay (AdamW vs Adam)
+                # if group['weight_decay'] != 0:
+                #     if group['adam_w_mode']:
+                #         p.data.mul_(1 - group['lr'] * group['weight_decay'])
+                #     else:
+                #         grad.add_(p.data, alpha=group['weight_decay'])
 
                 
-                # Обновляем моменты
-                grad /= grad.std()
-                state['exp_avg_sq'] = -(2 * beta1 * (1 - beta1) / (pow(beta1, 2) + pow(1 - beta1, 2))) * state['exp_avg'] * grad
-                state['exp_avg'].mul_(beta1).add_(grad, alpha=1 - beta1)
-                state['exp_avg_sq'] = state['exp_avg_sq'] + state['exp_avg'].pow(2) / (pow(beta1, 2) + pow(1 - beta1, 2))
-
+                # # Обновляем моменты
+                # if state['scale'] == None:
+                #     state['scale'] = grad.std()
+                # grad /= state['scale']
+                # beta_temp = 1 / (pow(beta1, 2) + pow(1 - beta1, 2))
+                # state['exp_avg_sq'] = -(2 * beta1 * (1 - beta1) * beta_temp) * state['exp_avg'] * grad
                 # state['exp_avg'].mul_(beta1).add_(grad, alpha=1 - beta1)
-                # state['exp_avg_sq'].mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+                # state['exp_avg_sq'] = state['exp_avg_sq'] + state['exp_avg'].pow(2) * beta_temp
+
+                fact = 5.5 / (grad.abs().max().item())
+                # fact = 1.0 / grad.std().item()
+                self.writer.add_scalar("fact_{}".format(self.layer), fact, self.counter)
+                # grad = grad / fact
+
+                # Part of casting to FP8
+                # e, m = 5, 2
+                # e, m = 2, 1
+                # state['exp_avg'] = self.tensor_to_fp8(state['exp_avg'], exponent_bits=e, mantissa_bits=m)
+                # state['exp_avg_sq'] = self.tensor_to_fp8(state['exp_avg_sq'], exponent_bits=e, mantissa_bits=m)
+
+                state['exp_avg'].mul_(beta1).add_(grad, alpha=1 - beta1)
+                state['exp_avg_sq'].mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+
+                # self.writer.add_scalar("exp_avg_sq_layer_{}".format(self.layer), state['exp_avg_sq'].std().item(), self.counter)
+
 
                 # Коррекция смещения
                 if group['bias_correction']:
@@ -94,25 +112,17 @@ class ScaledAdam(Optimizer):
                 # Обновление параметров
                 p.data.addcdiv_(state['exp_avg'], denom, value=-step_size)
 
-                # Part of casting to FP8
-                e, m = 5, 2
-                state['exp_avg'] = self.tensor_to_fp8(state['exp_avg'], exponent_bits=e, mantissa_bits=m)
-                state['exp_avg_sq'] = self.tensor_to_fp8(state['exp_avg_sq'], exponent_bits=e, mantissa_bits=m)
-
-                # # Part of castirng to FP4
-                # state['exp_avg'] = self.tensor_to_fp8(state['exp_avg'], exponent_bits=2, mantissa_bits=1)
-                # state['exp_avg_sq'] = self.tensor_to_fp8(state['exp_avg_sq'], exponent_bits=2, mantissa_bits=1)
 
                 # self.writer.add_histogram("exp_avg_layer_{}".format(self.layer), state['exp_avg'], self.counter)
                 # self.writer.add_histogram("exp_avg_sq_layer_{}".format(self.layer), state['exp_avg_sq'], self.counter)
 
 
-                ind = state['exp_avg']
+                # ind = state['exp_avg']
                 # ind = state['exp_avg_sq']
                 # ind = state['exp_avg'] * denom / step_size
                 
-                self.writer.add_scalar("abs_min[{}]".format(self.layer), ind.abs().min().item(), self.counter)
-                self.writer.add_scalar("abs_max[{}]".format(self.layer), ind.abs().max().item(), self.counter)
+                # self.writer.add_scalar("abs_min[{}]".format(self.layer), ind.abs().min().item(), self.counter)
+                # self.writer.add_scalar("abs_max[{}]".format(self.layer), ind.abs().max().item(), self.counter)
         return loss
     
 
