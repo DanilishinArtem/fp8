@@ -4,7 +4,7 @@ class Config:
         self.device = 'cuda'
         self.batch_size = 64
         self.learning_rate = 0.001
-        self.num_epochs = 10
+        self.num_epochs = 3
         self.split = 0.8
         self.pathToData = "/home/adanilishin/fp8/mnist_analisys/mnist_dataset"
         self.pathToLogs = "/home/adanilishin/fp8/mnist_analisys/Logs/test"

@@ -1,30 +1,42 @@
+import numpy as np
 import torch
-from torch.optim import Optimizer
+from torch.optim.optimizer import Optimizer
+
 
 class ScaledAdam(Optimizer):
-    def __init__(self, params, writer, lr=1e-3, betas=(0.9, 0.999), eps=1e-8,
-                 weight_decay=0, bias_correction=True, adam_w_mode=True,
-                 amsgrad=False, set_grad_none=True):
+    def __init__(self, params, writer, lr, beta=0.9, eps=1e-8, rebound='constant', warmup=500, init_lr=None, weight_decay=0, weight_decay_type=None):
         self.layer = None
         self.writer = writer
-        self.coutner = 0
-        if amsgrad:
-            raise RuntimeError('AdamNoApex does not support the AMSGrad variant.')
-        
-        defaults = dict(lr=lr, betas=betas, eps=eps,
-                        weight_decay=weight_decay,
-                        bias_correction=bias_correction,
-                        adam_w_mode=adam_w_mode) 
-        super().__init__(params, defaults)
-        self.set_grad_none = set_grad_none
+        self.counter = 0
 
-    def zero_grad(self):
-        if self.set_grad_none:
-            for group in self.param_groups:
-                for p in group['params']:
-                    p.grad = None
-        else:
-            super().zero_grad()
+        if not 0.0 < lr:
+            raise ValueError("Invalid learning rate value: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= beta < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(beta))
+        if rebound not in ['constant', 'belief']:
+            raise ValueError("Invalid recitifed bound: {}".format(rebound))
+        if not 0.0 <= warmup:
+            raise ValueError("Invalid warmup updates: {}".format(warmup))
+        if init_lr is None:
+            init_lr = lr / 1000
+        if not 0.0 <= init_lr <= lr:
+            raise ValueError("Invalid initial learning rate: {}".format(init_lr))
+        if not 0.0 <= weight_decay:
+            raise ValueError("Invalid weight_decay value: {}".format(weight_decay))
+        if weight_decay_type is None:
+            weight_decay_type = 'L2' if rebound == 'constant' else 'decoupled'
+        if weight_decay_type not in ['L2', 'decoupled', 'stable']:
+            raise ValueError("Invalid weight decay type: {}".format(weight_decay_type))
+
+        defaults = dict(lr=lr, beta=beta, eps=eps, rebound=rebound,
+                        warmup=warmup, init_lr=init_lr, base_lr=lr,
+                        weight_decay=weight_decay, weight_decay_type=weight_decay_type)
+        super(ScaledAdam, self).__init__(params, defaults)
+
+    def __setstate__(self, state):
+        super(ScaledAdam, self).__setstate__(state)
 
     def tensor_to_fp8(self, tensor, exponent_bits=4, mantissa_bits=3):
         max_exponent = 2 ** (exponent_bits - 1) - 1
@@ -36,81 +48,64 @@ class ScaledAdam(Optimizer):
         tensor_fp8 = tensor_quantized * scale
         return tensor_fp8
 
+    @torch.no_grad()
     def step(self, closure=None):
         self.layer = 0
-        self.coutner += 1
+        self.counter += 1
         loss = None
         if closure is not None:
-            loss = closure()
+            with torch.enable_grad():
+                loss = closure()
 
         for group in self.param_groups:
             for p in group['params']:
                 if p.grad is None:
                     continue
-                
-                grad = p.grad.data
-                if grad.is_sparse:
-                    raise RuntimeError('AdamNoApex does not support sparse gradients')
 
                 state = self.state[p]
-                beta1, beta2 = group['betas']
-                self.layer += 1
-                # Инициализация состояния
+
+                # State initialization
                 if len(state) == 0:
                     state['step'] = 0
-                    state['exp_avg'] = torch.zeros_like(p.data)
-                    state['exp_avg_sq'] = torch.zeros_like(p.data)
-                    state['p_prev'] = p.data.clone().detach()
-                    state['g_prev'] = grad.clone().detach()
-                    state['hessian'] = torch.zeros_like(p.data)
-                    state['cummulative'] = 0
-                else:
-                    delta_p = p.data - state['p_prev']
-                    delta_g = grad - state['g_prev']
-                    # d = -delta_p / group['lr']
-                    state['hessian'] = state['hessian'] + (((delta_p * delta_g).sum() - (delta_p * state['hessian'] * delta_p).sum()) / delta_p.norm(p=4)) * delta_p.pow(2)
-                    state['p_prev'] = p.data.clone().detach()
-                    state['g_prev'] = grad.clone().detach()
-                    # print("Number of elements in hessian: {}".format(state['hessian'].numel()))
+                    state['exp_avg'] = torch.zeros_like(p, memory_format=torch.preserve_format)
+                    state['exp_avg_sq'] = torch.zeros_like(p, memory_format=torch.preserve_format)
 
-                    ind = (state['hessian'] * delta_p.pow(2)).mean() * group['lr'] * pow(beta2, 1/2) / beta1 / grad.norm(p=1) / 2
-                    current_hess = state['hessian'].max().item()
-                    state['cummulative'] += current_hess
 
-                    self.writer.add_scalar("hessianMax_{}".format(self.layer), current_hess, self.coutner)
-                    self.writer.add_scalar("cummulative_hess_{}".format(self.layer), state['cummulative'], self.coutner)
-                    self.writer.add_scalar("ind_{}".format(self.layer), ind, self.coutner)
-
-                exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
                 state['step'] += 1
-                t = state['step']
 
-                # Применяем weight decay (AdamW vs Adam)
-                if group['weight_decay'] != 0:
-                    if group['adam_w_mode']:
-                        p.data.mul_(1 - group['lr'] * group['weight_decay'])
-                    else:
-                        grad.add_(p.data, alpha=group['weight_decay'])
+                # Perform optimization step
+                grad = p.grad
+                if grad.is_sparse:
+                    raise RuntimeError('Atom does not support sparse gradients.')
 
-                # Обновляем моменты
-                exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
-                exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
 
-                # Коррекция смещения
-                if group['bias_correction']:
-                    bias_correction1 = 1 - beta1 ** t
-                    bias_correction2 = 1 - beta2 ** t
-                    step_size = group['lr'] / bias_correction1
-                    denom = (exp_avg_sq.sqrt() / (bias_correction2 ** 0.5)).add_(group['eps'])
-                else:
-                    step_size = group['lr']
-                    denom = exp_avg_sq.sqrt().add_(group['eps'])
+                beta, eps = group['beta'], group['eps']
+                adam_beta1, adam_beta2 = 0.9, 0.99
+                bias_correction1 = 1 - adam_beta1 ** state['step']
+                bias_correction2 = 1 - adam_beta2 ** state['step']
+                step_size = group['lr'] / bias_correction1
 
-                # Обновление параметров
-                p.data.addcdiv_(exp_avg, denom, value=-step_size)
+                # Корректное направление обновления (Adam)
+                prev_grad = state['exp_avg'].clone()
+                state['exp_avg'].mul_(adam_beta1).add_(grad, alpha=1-adam_beta1)
+                state['exp_avg_sq'].mul_(adam_beta2).addcmul_(grad, grad, value=1-adam_beta2)
+
+                # Quantization ----------------------------------------------------------------------------------------
+                e, m = 5, 2
+                state['exp_avg'] = self.tensor_to_fp8(state['exp_avg'], exponent_bits=e, mantissa_bits=m)
+                # state['exp_avg_sq'] = self.tensor_to_fp8(state['exp_avg_sq'], exponent_bits=5, mantissa_bits=10)
+                # Quantization ----------------------------------------------------------------------------------------
+
+                delta_grad = grad - prev_grad
+
+                denom = (state['exp_avg_sq'].sqrt() / (bias_correction2**0.5)).add_(group['eps'])
+                d_p = -step_size * state['exp_avg'] / denom
+                h_denom = d_p.norm(p=2)**2 + group['eps']
+                current_hess = (delta_grad * d_p).sum() / h_denom
+
+                p.data.add_(d_p)
+
+                self.layer += 1
+                self.writer.add_scalar("hessNorm_{}".format(self.layer), current_hess.norm(), self.counter)
 
         return loss
-    
-
-    # https://www.math.uwaterloo.ca/~hwolkowi/henry/reports/cauchy.pdf
-    # https://arxiv.org/pdf/2009.13586

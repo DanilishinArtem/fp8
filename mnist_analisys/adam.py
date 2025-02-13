@@ -4,7 +4,7 @@ from torch.optim.optimizer import Optimizer
 
 
 class ScaledAdam(Optimizer):
-    def __init__(self, params, writer, lr, beta=0.9, eps=1e-4, rebound='constant', warmup=500, init_lr=None, weight_decay=0, weight_decay_type=None):
+    def __init__(self, params, writer, lr, beta=0.9, eps=1e-8, rebound='constant', warmup=500, init_lr=None, weight_decay=0, weight_decay_type=None):
         self.layer = None
         self.writer = writer
         self.counter = 0
@@ -48,6 +48,26 @@ class ScaledAdam(Optimizer):
         tensor_fp8 = tensor_quantized * scale
         return tensor_fp8
 
+    def compute_h_metrics(self, H, prev_H=None, eps=1e-6):
+        metrics = {}
+        H_flat = H.flatten()
+        # H-Sign
+        metrics['h_sign'] = torch.sign(H_flat).float().mean()
+        # Positive-H-Ratio
+        metrics['positive_ratio'] = (H_flat > 0).float().mean()
+        # Curvature-SNR
+        metrics['curvature_snr'] = torch.abs(H_flat.mean()) / (H_flat.std() + eps)
+        # H-Condition (approximated)
+        metrics['h_condition'] = H_flat.abs().max() / (H_flat.abs().min() + eps)
+        # H-Energy
+        metrics['h_energy'] = torch.norm(H, p='fro') / (np.sqrt(H.numel()) + eps)
+        # H-Drift (if previous Hessian is available)
+        if prev_H is not None:
+            metrics['h_drift'] = torch.norm(H - prev_H, p=2)
+        
+        return metrics
+
+
     @torch.no_grad()
     def step(self, closure=None):
         self.layer = 0
@@ -67,85 +87,56 @@ class ScaledAdam(Optimizer):
                 # State initialization
                 if len(state) == 0:
                     state['step'] = 0
-                    # Exponential moving average of gradient values
-                    state['exp_avg_grad'] = torch.zeros_like(p, memory_format=torch.preserve_format)
-                    # Exponential moving average of squared gradient values
-                    state['approx_hessian'] = torch.zeros_like(p, memory_format=torch.preserve_format)
-                    # Previous update direction
-                    state['update'] = torch.zeros_like(p, memory_format=torch.preserve_format)
+                    state['exp_avg'] = torch.zeros_like(p, memory_format=torch.preserve_format)
+                    state['exp_avg_sq'] = torch.zeros_like(p, memory_format=torch.preserve_format)
 
-                # # Calculate current lr
-                # if state['step'] < group['warmup']:
-                #     curr_lr = (group['base_lr'] - group['init_lr']) * state['step'] / group['warmup'] + group['init_lr']
-                # else:
-                #     curr_lr = group['lr']
-                curr_lr = group['lr']
+
+                state['step'] += 1
 
                 # Perform optimization step
                 grad = p.grad
                 if grad.is_sparse:
                     raise RuntimeError('Atom does not support sparse gradients.')
 
-                # Perform step weight decay
-                if group['weight_decay'] != 0 and group['weight_decay_type'] == 'L2':
-                    grad = grad.add(p, alpha=group['weight_decay'])
 
-                beta = group['beta']
-                eps = group['eps']
-                exp_avg_grad = state['exp_avg_grad']
-                B = state['approx_hessian']
-                d_p = state['update']
+                beta, eps = group['beta'], group['eps']
+                adam_beta1, adam_beta2 = 0.9, 0.99
+                bias_correction1 = 1 - adam_beta1 ** state['step']
+                bias_correction2 = 1 - adam_beta2 ** state['step']
+                step_size = group['lr'] / bias_correction1
+
+                # Корректное направление обновления (Adam)
+                prev_grad = state['exp_avg'].clone()
+                state['exp_avg'].mul_(adam_beta1).add_(grad, alpha=1-adam_beta1)
+                state['exp_avg_sq'].mul_(adam_beta2).addcmul_(grad, grad, value=1-adam_beta2)
 
                 # Quantization ----------------------------------------------------------------------------------------
                 e, m = 5, 2
-                state['exp_avg_grad'] = self.tensor_to_fp8(state['exp_avg_grad'], exponent_bits=e, mantissa_bits=m)
+                state['exp_avg'] = self.tensor_to_fp8(state['exp_avg'], exponent_bits=e, mantissa_bits=m)
+                # state['exp_avg_sq'] = self.tensor_to_fp8(state['exp_avg_sq'], exponent_bits=5, mantissa_bits=10)
                 # Quantization ----------------------------------------------------------------------------------------
 
+                delta_grad = grad - prev_grad
 
-                state['step'] += 1
-                bias_correction = 1 - beta ** state['step']
-                alpha = (1 - beta) / bias_correction
+                denom = (state['exp_avg_sq'].sqrt() / (bias_correction2**0.5)).add_(group['eps'])
+                d_p = -step_size * state['exp_avg'] / denom
+                h_denom = d_p.norm(p=2)**2 + group['eps']
+                current_hess = (delta_grad * d_p).sum() / h_denom
 
-                # calc the diff grad
-                delta_grad = grad - exp_avg_grad
-                if group['rebound'] == 'belief':
-                    rebound = delta_grad.norm(p=np.inf)
-                else:
-                    rebound = 0.01
-                    eps = eps / rebound
+                metrics = self.compute_h_metrics(current_hess, eps=group['eps'])
 
-                # Update the running average grad
-                exp_avg_grad.add_(delta_grad, alpha=alpha)
-
-                denom = d_p.norm(p=4).add(eps)
-                d_p.div_(denom)
-                v_sq = d_p.mul(d_p)
-                delta = delta_grad.div_(denom).mul_(d_p).sum().mul(-alpha) - B.mul(v_sq).sum()
-
-                # Update B
-                B.addcmul_(v_sq, delta)
-
-                # calc direction of parameter updates
-                if group['rebound'] == 'belief':
-                    denom = torch.max(B.abs(), rebound).add_(eps / alpha)
-                else:
-                    denom = B.abs().clamp_(min=rebound)
-
-                d_p.copy_(exp_avg_grad.div(denom))
-
-                # Perform step weight decay
-                if group['weight_decay'] != 0 and group['weight_decay_type'] != 'L2':
-                    if group['weight_decay_type'] == 'stable':
-                        weight_decay = group['weight_decay'] / denom.mean().item()
-                    else:
-                        weight_decay = group['weight_decay']
-                    d_p.add_(p, alpha=weight_decay)
-
-                p.add_(d_p, alpha=-curr_lr)
+                p.data.add_(d_p)
 
                 self.layer += 1
-                self.writer.add_scalar("hessMean_{}".format(self.layer), state['approx_hessian'].abs().mean().item(), self.counter)
-                self.writer.add_scalar("hessVar_{}".format(self.layer), state['approx_hessian'].abs().var().item(), self.counter)
-                self.writer.add_scalar("CurvatureRatio_{}".format(self.layer), (state['approx_hessian'].abs().max()/(state['approx_hessian'].abs().min()+group['eps'])).item(), self.counter)
+                # self.writer.add_scalar("hessNorm_{}".format(self.layer), current_hess.norm().item(), self.counter)
+                self.writer.add_scalar("h_sign_{}".format(self.layer), metrics['h_sign'].item(), self.counter)
+                self.writer.add_scalar("positive_ratio_{}".format(self.layer), metrics['positive_ratio'].item(), self.counter)
+                # self.writer.add_scalar("curvature_snr_{}".format(self.layer), metrics['curvature_snr'].item(), self.counter)
+                self.writer.add_scalar("h_condition_{}".format(self.layer), metrics['h_condition'].item(), self.counter)
+                self.writer.add_scalar("h_energy_{}".format(self.layer), metrics['h_energy'].item(), self.counter)
 
         return loss
+    
+
+# https://arxiv.org/pdf/2412.05270
+# https://arxiv.org/pdf/2009.13586
