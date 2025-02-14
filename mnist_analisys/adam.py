@@ -8,6 +8,16 @@ class ScaledAdam(Optimizer):
         self.layer = None
         self.writer = writer
         self.counter = 0
+        self.layers_name = [
+            'conv1_weight',
+            'conv1_bias',
+            'conv2_weight',
+            'conv2_bias',
+            'lin1_weight',
+            'lin1_bias',
+            'lin2_weight',
+            'lin2_bias',
+        ]
 
         if not 0.0 < lr:
             raise ValueError("Invalid learning rate value: {}".format(lr))
@@ -106,18 +116,18 @@ class ScaledAdam(Optimizer):
                 step_size = group['lr'] / bias_correction1
 
                 # Корректное направление обновления (Adam)
-                prev_grad = state['exp_avg'].clone()
+                # prev_grad = state['exp_avg'].clone()
                 state['exp_avg'].mul_(adam_beta1).add_(grad, alpha=1-adam_beta1)
                 state['exp_avg_sq'].mul_(adam_beta2).addcmul_(grad, grad, value=1-adam_beta2)
 
                 # Quantization ----------------------------------------------------------------------------------------
                 e, m = 5, 2
-                state['exp_avg'] = self.tensor_to_fp8(state['exp_avg'], exponent_bits=e, mantissa_bits=m)
+                # state['exp_avg'] = self.tensor_to_fp8(state['exp_avg'], exponent_bits=e, mantissa_bits=m)
                 # state['exp_avg_sq'] = self.tensor_to_fp8(state['exp_avg_sq'], exponent_bits=5, mantissa_bits=10)
                 # Quantization ----------------------------------------------------------------------------------------
 
-                delta_grad = grad - prev_grad
-
+                # delta_grad = grad - prev_grad
+                delta_grad = grad - state['exp_avg']
                 denom = (state['exp_avg_sq'].sqrt() / (bias_correction2**0.5)).add_(group['eps'])
                 d_p = -step_size * state['exp_avg'] / denom
                 h_denom = d_p.norm(p=2)**2 + group['eps']
@@ -126,14 +136,13 @@ class ScaledAdam(Optimizer):
                 metrics = self.compute_h_metrics(current_hess, eps=group['eps'])
 
                 p.data.add_(d_p)
-
+                # self.writer.add_scalar("[{}]_hessNorm_{}".format(self.layer, self.layers_name[self.layer]), current_hess.norm().item(), self.counter)
+                self.writer.add_scalar("[{}]_h_sign_{}".format(self.layer, self.layers_name[self.layer]), metrics['h_sign'].item(), self.counter)
+                self.writer.add_scalar("[{}]_positive_ratio_{}".format(self.layer, self.layers_name[self.layer]), metrics['positive_ratio'].item(), self.counter)
+                # self.writer.add_scalar("[{}]_curvature_snr_{}".format(self.layer, self.layers_name[self.layer]), metrics['curvature_snr'].item(), self.counter)
+                self.writer.add_scalar("[{}]_h_condition_{}".format(self.layer, self.layers_name[self.layer]), metrics['h_condition'].item(), self.counter)
+                self.writer.add_scalar("[{}]_h_energy_{}".format(self.layer, self.layers_name[self.layer]), metrics['h_energy'].item(), self.counter)
                 self.layer += 1
-                # self.writer.add_scalar("hessNorm_{}".format(self.layer), current_hess.norm().item(), self.counter)
-                self.writer.add_scalar("h_sign_{}".format(self.layer), metrics['h_sign'].item(), self.counter)
-                self.writer.add_scalar("positive_ratio_{}".format(self.layer), metrics['positive_ratio'].item(), self.counter)
-                # self.writer.add_scalar("curvature_snr_{}".format(self.layer), metrics['curvature_snr'].item(), self.counter)
-                self.writer.add_scalar("h_condition_{}".format(self.layer), metrics['h_condition'].item(), self.counter)
-                self.writer.add_scalar("h_energy_{}".format(self.layer), metrics['h_energy'].item(), self.counter)
 
         return loss
     
